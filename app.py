@@ -5,7 +5,7 @@ import tempfile
 import os
 import json
 import shutil
-import whisper
+import assemblyai as aai
 
 # App configuration
 st.set_page_config(page_title="Video Auto Dubbing & Localizer Pro", page_icon="🎬", layout="wide")
@@ -20,12 +20,10 @@ def run_async(coro):
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
 
-# Load Standard OpenAI Whisper Model (Stable & Lightweight)
-@st.cache_resource
-def load_whisper_model():
-    return whisper.load_model("base")
-
-whisper_model = load_whisper_model()
+# Sidebar for AssemblyAI API Key
+st.sidebar.title("⚙️ Settings")
+aai_key = st.sidebar.text_input("🔑 AssemblyAI API Key ထည့်ပါ", type="password")
+st.sidebar.markdown("[AssemblyAI Dashboard မှ API Key ယူရန်](https://www.assemblyai.com)")
 
 tab1, tab2, tab3 = st.tabs(["📹 1. Upload & Transcribe", "📝 2. Rewrite & Translate", "🎙️ 3. Dubbing & Video Merge"])
 
@@ -56,52 +54,74 @@ with tab1:
             st.audio(st.session_state.video_path)
 
         if st.button("🎙️ Transcribe စတင်ထုတ်မည်", type="primary", use_container_width=True):
-            if not shutil.which("ffmpeg"):
+            if not aai_key:
+                st.error("❌ ဘယ်ဘက် Sidebar တွင် AssemblyAI API Key အရင်ထည့်သွင်းပေးပါ။")
+            elif not shutil.which("ffmpeg"):
                 st.error("❌ FFmpeg System Path တွင် မရှိပါ။ packages.txt ကို စစ်ဆေးပါ။")
             else:
-                with st.spinner("Video မှ Audio ကို ခွဲထုတ်ပြီး တရုတ်/အင်္ဂလိပ် စကားပြောများကို ဖတ်ယူနေပါသည်..."):
+                with st.spinner("AssemblyAI ဖြင့် အသံမှ စာသားအဖြစ် ပြောင်းလဲနေပါသည်..."):
                     # 1. Video မှ Audio ကို MP3 အဖြစ် သီးသန့် ခွဲထုတ်ခြင်း
                     extracted_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
                     os.system(f'ffmpeg -i "{st.session_state.video_path}" -vn -ar 16000 -ac 1 -ab 128k -f mp3 -y "{extracted_audio}"')
 
-                    # 2. Language setting သတ်မှတ်ခြင်း
-                    selected_lang = None
-                    if "zh" in lang_choice:
-                        selected_lang = "zh"
-                    elif "en" in lang_choice:
-                        selected_lang = "en"
+                    try:
+                        aai.settings.api_key = aai_key
 
-                    # 3. Standard OpenAI Whisper ထဲသို့ ထည့်သွင်းခြင်း
-                    options = {}
-                    if selected_lang:
-                        options["language"] = selected_lang
+                        # 2. Language Code သတ်မှတ်ခြင်း
+                        lang_code = None
+                        if "zh" in lang_choice:
+                            lang_code = "zh"
+                        elif "en" in lang_choice:
+                            lang_code = "en"
 
-                    result = whisper_model.transcribe(extracted_audio, **options)
-                    
-                    parsed_segments = []
-                    full_text_list = []
+                        config = aai.TranscriptionConfig(
+                            language_code=lang_code if lang_code else None,
+                            language_detection=True if not lang_code else False
+                        )
 
-                    for seg in result.get("segments", []):
-                        txt = seg["text"].strip()
-                        if txt:
-                            parsed_segments.append({
-                                "start": round(seg["start"], 2),
-                                "end": round(seg["end"], 2),
-                                "text": txt
-                            })
-                            full_text_list.append(txt)
+                        transcriber = aai.Transcriber()
+                        transcript = transcriber.transcribe(extracted_audio, config=config)
 
-                    # Clean up Audio Temp File
-                    if os.path.exists(extracted_audio):
-                        os.remove(extracted_audio)
+                        parsed_segments = []
+                        full_text_list = []
 
-                    st.session_state.transcript_data = parsed_segments
-                    st.session_state.full_text = "\n".join(full_text_list)
+                        if transcript.status == aai.TranscriptStatus.error:
+                            st.error(f"❌ Transcribe Error: {transcript.error}")
+                        else:
+                            # Sentences/Words Extraction
+                            sentences = transcript.get_sentences()
+                            if sentences:
+                                for sent in sentences:
+                                    txt = sent.text.strip()
+                                    if txt:
+                                        parsed_segments.append({
+                                            "start": round(sent.start / 1000.0, 2),
+                                            "end": round(sent.end / 1000.0, 2),
+                                            "text": txt
+                                        })
+                                        full_text_list.append(txt)
+                            else:
+                                # Fallback full text
+                                txt = transcript.text.strip() if transcript.text else ""
+                                if txt:
+                                    full_text_list.append(txt)
+                                    parsed_segments.append({"start": 0, "end": 0, "text": txt})
 
-                    if len(full_text_list) == 0:
-                        st.warning("⚠️ စာသား ထွက်မလာပါ။ Video ထဲတွင် အသံပါဝင်မှု ရှိမရှိ သို့မဟုတ် မူရင်း Video ကို စစ်ဆေးပေးပါ။")
-                    else:
-                        st.success(f"✅ စာသား {len(full_text_list)} ကြောင်း Transcribe ပြုလုပ်ပြီးပါပြီ! TAB 2 သို့ သွား၍ ကြည့်နိုင်ပါပြီ။")
+                            st.session_state.transcript_data = parsed_segments
+                            st.session_state.full_text = "\n".join(full_text_list)
+
+                            if len(full_text_list) == 0:
+                                st.warning("⚠️ စာသား ထွက်မလာပါ။ မူရင်း Video တွင် အသံပါဝင်မှု စစ်ဆေးပါ။")
+                            else:
+                                st.success(f"✅ စာသား {len(full_text_list)} ကြောင်း အောင်မြင်စွာ ထွက်လာပါပြီ!")
+                                st.text_area("📋 ထွက်လာသော စာသားများ (Preview)", value=st.session_state.full_text, height=200)
+
+                    except Exception as e:
+                        st.error(f"❌ AssemblyAI API Error: {str(e)}")
+
+                    finally:
+                        if os.path.exists(extracted_audio):
+                            os.remove(extracted_audio)
 
 # ================= TAB 2 : JSON Format & Rewrite =================
 with tab2:
@@ -181,7 +201,7 @@ with tab3:
     with col2:
         speed = st.slider("⚡ အသံအမြန်နှုန်း", 0.5, 2.0, 1.0, 0.1)
         echo = st.slider("🔊 ပဲ့တင်သံ Level", 0, 100, 0, 5)
-        orig_vol = st.slider("🔇 မူရင်း Video အသံပမာဏ (%)", 0, 100, 10, 5, help="0 ထားပါက မူရင်းအသံ လုံးဝပိတ်ပါမည်")
+        orig_vol = st.slider("🔇 မူရင်း Video အသံပမာဏ (%)", 0, 100, 10, 5)
 
     if st.button("🚀 Video ကို အသံသစ်ဖြင့် Dubbing ထုတ်မည်", type="primary", use_container_width=True):
         text_to_speak = ""
