@@ -32,12 +32,17 @@ tab1, tab2, tab3 = st.tabs(["📹 1. Upload & Transcribe", "📝 2. Rewrite & Tr
 if 'video_path' not in st.session_state: st.session_state.video_path = None
 if 'transcript_data' not in st.session_state: st.session_state.transcript_data = []
 if 'full_text' not in st.session_state: st.session_state.full_text = ""
-if 'final_dub_audio' not in st.session_state: st.session_state.final_dub_audio = None
+if 'final_dub_video' not in st.session_state: st.session_state.final_dub_video = None
 
 # ================= TAB 1 : Video Upload & Transcribe =================
 with tab1:
     st.markdown("### 📹 Video သို့မဟုတ် Audio File တင်ပါ")
     uploaded_file = st.file_uploader("Video/Audio Upload (MP4, MKV, MOV, MP3, WAV)", type=['mp4', 'mkv', 'mov', 'mp3', 'wav'])
+
+    lang_choice = st.selectbox(
+        "🌐 Video ထဲက စကားပြော ဘာသာစကား ရွေးပါ",
+        ["zh (Chinese - တရုတ်)", "en (English - အင်္ဂလိပ်)", "Auto Detect (အလိုအလျောက်ဖတ်ရန်)"]
+    )
 
     if uploaded_file:
         suffix = os.path.splitext(uploaded_file.name)[1]
@@ -52,24 +57,52 @@ with tab1:
 
         if st.button("🎙️ Transcribe စတင်ထုတ်မည်", type="primary", use_container_width=True):
             if not shutil.which("ffmpeg"):
-                st.error("❌ FFmpeg System Path တွင် မရှိပါ။")
+                st.error("❌ FFmpeg System Path တွင် မရှိပါ။ packages.txt ကို စစ်ဆေးပါ။")
             else:
-                with st.spinner("Video မှ စကားပြောများကို ဖတ်ယူနေပါသည်..."):
-                    segments, info = whisper_model.transcribe(st.session_state.video_path, beam_size=5)
+                with st.spinner("Audio ကို သီးသန့်ခွဲထုတ်ပြီး စကားပြောများကို ဖတ်ယူနေပါသည်..."):
+                    # 1. Video မှ Audio ကို 16kHz WAV အဖြစ် သီးသန့် ခွဲထုတ်ခြင်း (Whisper ဖတ်ရလွယ်အောင်)
+                    extracted_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
+                    os.system(f'ffmpeg -i "{st.session_state.video_path}" -vn -acodec pcm_s16le -ar 16000 -ac 1 -y "{extracted_audio}"')
+
+                    # 2. Language setting သတ်မှတ်ခြင်း
+                    selected_lang = None
+                    if "zh" in lang_choice:
+                        selected_lang = "zh"
+                    elif "en" in lang_choice:
+                        selected_lang = "en"
+
+                    # 3. Transcribe ပြုလုပ်ခြင်း
+                    segments, info = whisper_model.transcribe(
+                        extracted_audio, 
+                        beam_size=5, 
+                        language=selected_lang,
+                        task="transcribe"
+                    )
+                    
                     parsed_segments = []
                     full_text_list = []
 
                     for seg in segments:
-                        parsed_segments.append({
-                            "start": round(seg.start, 2),
-                            "end": round(seg.end, 2),
-                            "text": seg.text.strip()
-                        })
-                        full_text_list.append(seg.text.strip())
+                        txt = seg.text.strip()
+                        if txt:
+                            parsed_segments.append({
+                                "start": round(seg.start, 2),
+                                "end": round(seg.end, 2),
+                                "text": txt
+                            })
+                            full_text_list.append(txt)
+
+                    # Clean up WAV file
+                    if os.path.exists(extracted_audio):
+                        os.remove(extracted_audio)
 
                     st.session_state.transcript_data = parsed_segments
                     st.session_state.full_text = "\n".join(full_text_list)
-                    st.success("✅ Transcribe ပြုလုပ်ပြီးပါပြီ! TAB 2 သို့ သွား၍ ပြင်ဆင်ပါ။")
+
+                    if len(full_text_list) == 0:
+                        st.warning("⚠️ စာသား ထွက်မလာပါ။ Language နေရာတွင် တရုတ် (zh) သို့မဟုတ် အင်္ဂလိပ် (en) တိုက်ရိုက်ရွေးပေးပါ။")
+                    else:
+                        st.success(f"✅ Transcribe ပြုလုပ်ပြီးပါပြီ! (Detected: {info.language}) TAB 2 သို့ သွား၍ ပြင်ဆင်ပါ။")
 
 # ================= TAB 2 : JSON Format & Rewrite =================
 with tab2:
@@ -82,13 +115,12 @@ with tab2:
 
     with col_b:
         st.markdown("**JSON / Subtitle Translations ထည့်သွင်းရန်**")
-        # Pre-fill JSON structure
         default_json = {
             "translations": [item["text"] for item in st.session_state.transcript_data] if st.session_state.transcript_data else []
         }
         json_input = st.text_area("JSON Input", json.dumps(default_json, ensure_ascii=False, indent=2), height=300, key="json_editor")
 
-    st.info("💡 ဘာသာပြန်ထားသော စာသား သို့မဟုတ် Rewrite လုပ်ထားသော JSON စာကြောင်းများကို အထက်ပါ JSON Editor တွင် ပြင်ဆင်ပါ။")
+    st.info("💡 ဘာသာပြန်ထားသော မြန်မာစာသား သို့မဟုတ် Rewrite လုပ်ထားသော JSON စာကြောင်းများကို အထက်ပါ JSON Editor တွင် ပြင်ဆင်ပါ။")
 
 # ================= TAB 3 : TTS & Video Merge =================
 with tab3:
@@ -153,7 +185,6 @@ with tab3:
         orig_vol = st.slider("🔇 မူရင်း Video အသံပမာဏ (%)", 0, 100, 10, 5, help="0 ထားပါက မူရင်းအသံ လုံးဝပိတ်ပါမည်")
 
     if st.button("🚀 Video ကို အသံသစ်ဖြင့် Dubbing ထုတ်မည်", type="primary", use_container_width=True):
-        # Extract text from JSON editor
         text_to_speak = ""
         try:
             parsed_json = json.loads(json_input)
@@ -177,12 +208,9 @@ with tab3:
                 output_video_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
                 orig_v_vol = orig_vol / 100.0
 
-                # FFmpeg Command to replace/mix video audio with new TTS
                 if orig_vol == 0:
-                    # Mute original audio completely
                     cmd = f'ffmpeg -i "{st.session_state.video_path}" -i "{dub_audio_path}" -c:v copy -map 0:v:0 -map 1:a:0 -shortest -y "{output_video_path}"'
                 else:
-                    # Mix original audio (reduced) with new TTS audio
                     cmd = f'ffmpeg -i "{st.session_state.video_path}" -i "{dub_audio_path}" -filter_complex "[0:a]volume={orig_v_vol}[orig];[1:a]volume=1.0[dub];[orig][dub]amix=inputs=2:duration=first" -c:v copy -shortest -y "{output_video_path}"'
 
                 os.system(cmd)
