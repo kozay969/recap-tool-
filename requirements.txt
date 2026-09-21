@@ -1,0 +1,6 @@
+streamlit>=1.35.0
+edge-tts>=6.1.9
+faster-whisper>=1.0.0
+ctranslate2>=4.0.0
+torch
+torchaudio
