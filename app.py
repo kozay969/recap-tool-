@@ -98,16 +98,10 @@ with tab1:
                                             "text": txt
                                         })
                                         full_text_list.append(txt)
-                            else:
-                                txt = transcript.text.strip() if transcript.text else ""
-                                if txt:
-                                    full_text_list.append(txt)
-                                    parsed_segments.append({"start": 0, "end": 0, "text": txt})
 
                             st.session_state.transcript_data = parsed_segments
                             st.session_state.full_text = "\n".join(full_text_list)
                             
-                            # Auto-generate initial JSON
                             default_obj = {"translations": full_text_list}
                             st.session_state.json_text_state = json.dumps(default_obj, ensure_ascii=False, indent=2)
 
@@ -132,7 +126,6 @@ with tab2:
         st.markdown("**မူရင်း ထုတ်ယူထားသော စာသားများ (Raw Transcripts)**")
         raw_input = st.text_area("Original Text", st.session_state.full_text, height=300, key="raw_text")
         
-        # 🟢 JSON သို့ ပြောင်းရန် ခလုတ်
         if st.button("🔄 Original Text မှ JSON သို့ ပြောင်းမည်", use_container_width=True):
             lines = [line.strip() for line in raw_input.split('\n') if line.strip()]
             new_json = {"translations": lines}
@@ -143,55 +136,13 @@ with tab2:
         st.markdown("**JSON / Subtitle Translations ထည့်သွင်းရန်**")
         json_input = st.text_area("JSON Input", st.session_state.json_text_state, height=300, key="json_editor")
 
-    st.info("💡 ဘာသာပြန်ထားသော မြန်မာစာသားများကို JSON Format အတိုင်း 'JSON Input' သို့မဟုတ် Original Text ထဲ ထည့်ပြီး 'Convert' ခလုတ်နှိပ်ပေးပါ။")
-
 # ================= TAB 3 : TTS & Video Merge =================
 with tab3:
-    st.markdown("### 🎙️ Edge TTS & Video Audio Replacement")
+    st.markdown("### 🎙️ Edge TTS & Synchronized Video Merge")
 
-    def parse_style_prompt(prompt, speed_multiplier=1.0, echo_level=0):
-        prompt = prompt.lower()
-        filters = []
-        effects = []
-        pitch_rate = 1.0
-
-        if any(w in prompt for w in ['ထူထူ', 'ထူ', 'နိမ့်', 'အဖိုးကြီး']):
-            pitch_rate = 0.75
-            filters.append("asetrate=44100*0.75,aresample=44100")
-            effects.append("အသံထူထူ")
-        elif any(w in prompt for w in ['စူးစူး', 'စူး', 'မြင့်', 'ကလေး']):
-            pitch_rate = 1.3
-            filters.append("asetrate=44100*1.3,aresample=44100")
-            effects.append("အသံစူးစူး")
-
-        final_speed = speed_multiplier
-        if any(w in prompt for w in ['နှေး', 'နှေးနှေး']): final_speed *= 0.7
-        elif any(w in prompt for w in ['မြန်', 'မြန်မြန်']): final_speed *= 1.4
-
-        if pitch_rate != 1.0:
-            tempo_fix = final_speed / pitch_rate
-            filters.append(f"atempo={tempo_fix}")
-        else:
-            filters.append(f"atempo={final_speed}")
-
-        if echo_level > 0:
-            decay = echo_level / 100.0
-            delay = int(250 + (echo_level * 10))
-            filters.append(f"aecho=0.8:0.88:{delay}:{decay}")
-
-        filter_str = ",".join(filters) if filters else "anull"
-        return filter_str, " + ".join(effects)
-
-    async def generate_tts(text, voice, filter_str):
+    async def generate_single_tts(text, voice, output_path):
         communicate = edge_tts.Communicate(text, voice)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-            await communicate.save(tmp.name)
-            raw_voice = tmp.name
-
-        processed_voice = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
-        os.system(f'ffmpeg -i "{raw_voice}" -af "{filter_str}" -y "{processed_voice}"')
-        if os.path.exists(raw_voice): os.remove(raw_voice)
-        return processed_voice
+        await communicate.save(output_path)
 
     col1, col2 = st.columns([2, 1])
     with col1:
@@ -200,52 +151,74 @@ with tab3:
             ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
             format_func=lambda x: "Thiha - ယောက်ျားလေး" if "Thiha" in x else "Nilar - မိန်းကလေး"
         )
-        style_prompt = st.text_area("✍️ အသံပုံစံ Prompt (Optional)", placeholder="ဥပမာ: အသံထူထူ၊ နှေးနှေး", height=60)
 
     with col2:
-        speed = st.slider("⚡ အသံအမြန်နှုန်း", 0.5, 2.0, 1.0, 0.1)
-        echo = st.slider("🔊 ပဲ့တင်သံ Level", 0, 100, 0, 5)
-        orig_vol = st.slider("🔇 မူရင်း Video အသံပမာဏ (%)", 0, 100, 10, 5)
+        orig_vol = st.slider("🔇 မူရင်း Video အသံပမာဏ (%)", 0, 100, 5)
 
-    if st.button("🚀 Video ကို အသံသစ်ဖြင့် Dubbing ထုတ်မည်", type="primary", use_container_width=True):
-        text_to_speak = ""
+    if st.button("🚀 Video နှင့် အသံကို Time-Sync လုပ်၍ Dubbing ထုတ်မည်", type="primary", use_container_width=True):
+        translations = []
         try:
             parsed_json = json.loads(st.session_state.json_editor)
-            arr = parsed_json.get("translations", [])
-            if isinstance(arr, list) and len(arr) > 0:
-                text_to_speak = "\n".join(arr)
-            else:
-                text_to_speak = st.session_state.json_editor
+            translations = parsed_json.get("translations", [])
         except:
-            text_to_speak = st.session_state.json_editor
+            translations = [line.strip() for line in st.session_state.json_editor.split('\n') if line.strip()]
 
-        if not text_to_speak.strip():
-            st.warning("⚠️ ဖတ်ရန် စာသားမရှိပါ။ TAB 2 တွင် JSON/Text စစ်ဆေးပါ။")
+        if not translations:
+            st.warning("⚠️ ဖတ်ရန် စာသားမရှိပါ။ TAB 2 တွင် JSON စစ်ဆေးပါ။")
         elif not st.session_state.video_path:
             st.warning("⚠️ Video Upload မတင်ရသေးပါ။ TAB 1 တွင် Upload တင်ပါ။")
+        elif len(translations) != len(st.session_state.transcript_data):
+            st.error(f"❌ စာကြောင်း အရေအတွက် မတူပါ (Original: {len(st.session_state.transcript_data)} ကြောင်း, Translated: {len(translations)} ကြောင်း)။ ကြောင်းရေ ညီအောင် ပြင်ပေးပါ။")
         else:
-            with st.spinner("အသံသစ် ထုတ်လုပ်ပြီး Video နှင့် ပေါင်းစပ်နေပါသည်..."):
-                filter_str, _ = parse_style_prompt(style_prompt, speed, echo)
-                dub_audio_path = run_async(generate_tts(text_to_speak, base_voice, filter_str))
+            with st.spinner("စာကြောင်းတစ်ကြောင်းချင်းစီ၏ Timing ကို တွက်ချက်၍ Video နှင့် အပြိုင်ညှိနေပါသည်..."):
+                filter_complex_parts = []
+                temp_files = []
 
-                output_video_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+                # 1. တိုင်းတာထားသော Timestamp အလိုက် စကားပြောတစ်ခုချင်းစီကို အသံထုတ်ယူခြင်း
+                for idx, (seg, text) in enumerate(zip(st.session_state.transcript_data, translations)):
+                    start_ms = int(seg['start'] * 1000)
+                    duration_sec = max(0.5, seg['end'] - seg['start'])
+
+                    tts_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
+                    temp_files.append(tts_tmp)
+
+                    run_async(generate_single_tts(text, base_voice, tts_tmp))
+
+                    # FFmpeg timing & delay filter
+                    filter_complex_parts.append(
+                        f"[{idx+1}:a]adelay={start_ms}|{start_ms}[a{idx}]"
+                    )
+
+                # Combine all audio streams using amix
+                amix_inputs = "".join([f"[a{i}]" for i in range(len(translations))])
+                filter_complex_str = ";".join(filter_complex_parts) + f";{amix_inputs}amix=inputs={len(translations)}:dropout_transition=0[dubbed_audio]"
+
+                # Video Audio blend filter
                 orig_v_vol = orig_vol / 100.0
-
-                if orig_vol == 0:
-                    cmd = f'ffmpeg -i "{st.session_state.video_path}" -i "{dub_audio_path}" -c:v copy -map 0:v:0 -map 1:a:0 -shortest -y "{output_video_path}"'
+                if orig_vol > 0:
+                    filter_complex_str += f";[0:a]volume={orig_v_vol}[orig];[orig][dubbed_audio]amix=inputs=2:duration=first[final_audio]"
+                    map_audio = "[final_audio]"
                 else:
-                    cmd = f'ffmpeg -i "{st.session_state.video_path}" -i "{dub_audio_path}" -filter_complex "[0:a]volume={orig_v_vol}[orig];[1:a]volume=1.0[dub];[orig][dub]amix=inputs=2:duration=first" -c:v copy -shortest -y "{output_video_path}"'
+                    map_audio = "[dubbed_audio]"
 
+                # FFmpeg Command
+                inputs_cmd = f'-i "{st.session_state.video_path}" ' + " ".join([f'-i "{f}"' for f in temp_files])
+                output_video_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+
+                cmd = f'ffmpeg {inputs_cmd} -filter_complex "{filter_complex_str}" -map 0:v:0 -map {map_audio} -c:v copy -shortest -y "{output_video_path}"'
                 os.system(cmd)
 
-                if os.path.exists(dub_audio_path): os.remove(dub_audio_path)
+                # Temp Cleanups
+                for f in temp_files:
+                    if os.path.exists(f): os.remove(f)
 
                 st.session_state.final_dub_video = output_video_path
-                st.success("✅ Video Dubbing အောင်မြင်စွာ ပြီးဆုံးပါပြီ!")
+                st.success("✅ အသံနှင့် Video ကြာချိန် ကွက်တိ ညှိပြီးပါပြီ!")
 
     if 'final_dub_video' in st.session_state and st.session_state.final_dub_video and os.path.exists(st.session_state.final_dub_video):
         st.markdown("---")
-        st.markdown("### 🎬 Final Dubbed Video")
+        st.markdown("### 🎬 Final Synchronized Dubbed Video")
         st.video(st.session_state.final_dub_video)
         with open(st.session_state.final_dub_video, 'rb') as f:
             st.download_button("📥 Dubbed Video Download (MP4)", f.read(), "dubbed_video.mp4", "video/mp4", use_container_width=True)
+                        
