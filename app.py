@@ -31,6 +31,7 @@ if 'video_path' not in st.session_state: st.session_state.video_path = None
 if 'transcript_data' not in st.session_state: st.session_state.transcript_data = []
 if 'full_text' not in st.session_state: st.session_state.full_text = ""
 if 'final_dub_video' not in st.session_state: st.session_state.final_dub_video = None
+if 'json_text_state' not in st.session_state: st.session_state.json_text_state = '{\n  "translations": []\n}'
 
 # ================= TAB 1 : Video Upload & Transcribe =================
 with tab1:
@@ -60,14 +61,12 @@ with tab1:
                 st.error("❌ FFmpeg System Path တွင် မရှိပါ။ packages.txt ကို စစ်ဆေးပါ။")
             else:
                 with st.spinner("AssemblyAI ဖြင့် အသံမှ စာသားအဖြစ် ပြောင်းလဲနေပါသည်..."):
-                    # 1. Video မှ Audio ကို MP3 အဖြစ် သီးသန့် ခွဲထုတ်ခြင်း
                     extracted_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
                     os.system(f'ffmpeg -i "{st.session_state.video_path}" -vn -ar 16000 -ac 1 -ab 128k -f mp3 -y "{extracted_audio}"')
 
                     try:
                         aai.settings.api_key = aai_key
 
-                        # 2. Language Code သတ်မှတ်ခြင်း
                         lang_code = None
                         if "zh" in lang_choice:
                             lang_code = "zh"
@@ -88,7 +87,6 @@ with tab1:
                         if transcript.status == aai.TranscriptStatus.error:
                             st.error(f"❌ Transcribe Error: {transcript.error}")
                         else:
-                            # Sentences/Words Extraction
                             sentences = transcript.get_sentences()
                             if sentences:
                                 for sent in sentences:
@@ -101,7 +99,6 @@ with tab1:
                                         })
                                         full_text_list.append(txt)
                             else:
-                                # Fallback full text
                                 txt = transcript.text.strip() if transcript.text else ""
                                 if txt:
                                     full_text_list.append(txt)
@@ -109,12 +106,15 @@ with tab1:
 
                             st.session_state.transcript_data = parsed_segments
                             st.session_state.full_text = "\n".join(full_text_list)
+                            
+                            # Auto-generate initial JSON
+                            default_obj = {"translations": full_text_list}
+                            st.session_state.json_text_state = json.dumps(default_obj, ensure_ascii=False, indent=2)
 
                             if len(full_text_list) == 0:
                                 st.warning("⚠️ စာသား ထွက်မလာပါ။ မူရင်း Video တွင် အသံပါဝင်မှု စစ်ဆေးပါ။")
                             else:
                                 st.success(f"✅ စာသား {len(full_text_list)} ကြောင်း အောင်မြင်စွာ ထွက်လာပါပြီ!")
-                                st.text_area("📋 ထွက်လာသော စာသားများ (Preview)", value=st.session_state.full_text, height=200)
 
                     except Exception as e:
                         st.error(f"❌ AssemblyAI API Error: {str(e)}")
@@ -130,16 +130,20 @@ with tab2:
     col_a, col_b = st.columns(2)
     with col_a:
         st.markdown("**မူရင်း ထုတ်ယူထားသော စာသားများ (Raw Transcripts)**")
-        st.text_area("Original Text", st.session_state.full_text, height=300, key="raw_text")
+        raw_input = st.text_area("Original Text", st.session_state.full_text, height=300, key="raw_text")
+        
+        # 🟢 JSON သို့ ပြောင်းရန် ခလုတ်
+        if st.button("🔄 Original Text မှ JSON သို့ ပြောင်းမည်", use_container_width=True):
+            lines = [line.strip() for line in raw_input.split('\n') if line.strip()]
+            new_json = {"translations": lines}
+            st.session_state.json_text_state = json.dumps(new_json, ensure_ascii=False, indent=2)
+            st.success("✅ JSON Format အဖြစ် ပြောင်းလဲပြီးပါပြီ!")
 
     with col_b:
         st.markdown("**JSON / Subtitle Translations ထည့်သွင်းရန်**")
-        default_json = {
-            "translations": [item["text"] for item in st.session_state.transcript_data] if st.session_state.transcript_data else []
-        }
-        json_input = st.text_area("JSON Input", json.dumps(default_json, ensure_ascii=False, indent=2), height=300, key="json_editor")
+        json_input = st.text_area("JSON Input", st.session_state.json_text_state, height=300, key="json_editor")
 
-    st.info("💡 ဘာသာပြန်ထားသော မြန်မာစာသား သို့မဟုတ် Rewrite လုပ်ထားသော JSON စာကြောင်းများကို အထက်ပါ JSON Editor တွင် ပြင်ဆင်ပါ။")
+    st.info("💡 ဘာသာပြန်ထားသော မြန်မာစာသားများကို JSON Format အတိုင်း 'JSON Input' သို့မဟုတ် Original Text ထဲ ထည့်ပြီး 'Convert' ခလုတ်နှိပ်ပေးပါ။")
 
 # ================= TAB 3 : TTS & Video Merge =================
 with tab3:
@@ -206,14 +210,14 @@ with tab3:
     if st.button("🚀 Video ကို အသံသစ်ဖြင့် Dubbing ထုတ်မည်", type="primary", use_container_width=True):
         text_to_speak = ""
         try:
-            parsed_json = json.loads(json_input)
+            parsed_json = json.loads(st.session_state.json_editor)
             arr = parsed_json.get("translations", [])
             if isinstance(arr, list) and len(arr) > 0:
                 text_to_speak = "\n".join(arr)
             else:
-                text_to_speak = json_input
+                text_to_speak = st.session_state.json_editor
         except:
-            text_to_speak = json_input
+            text_to_speak = st.session_state.json_editor
 
         if not text_to_speak.strip():
             st.warning("⚠️ ဖတ်ရန် စာသားမရှိပါ။ TAB 2 တွင် JSON/Text စစ်ဆေးပါ။")
