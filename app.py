@@ -5,7 +5,7 @@ import tempfile
 import os
 import json
 import shutil
-from faster_whisper import WhisperModel
+import whisper
 
 # App configuration
 st.set_page_config(page_title="Video Auto Dubbing & Localizer Pro", page_icon="🎬", layout="wide")
@@ -20,12 +20,12 @@ def run_async(coro):
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
 
-# Load Whisper Model (Cached for performance)
+# Load Standard OpenAI Whisper Model (Stable & Lightweight)
 @st.cache_resource
-def load_whisper_model(model_size="base"):
-    return WhisperModel(model_size, device="cpu", compute_type="int8")
+def load_whisper_model():
+    return whisper.load_model("base")
 
-whisper_model = load_whisper_model("base")
+whisper_model = load_whisper_model()
 
 tab1, tab2, tab3 = st.tabs(["📹 1. Upload & Transcribe", "📝 2. Rewrite & Translate", "🎙️ 3. Dubbing & Video Merge"])
 
@@ -59,10 +59,10 @@ with tab1:
             if not shutil.which("ffmpeg"):
                 st.error("❌ FFmpeg System Path တွင် မရှိပါ။ packages.txt ကို စစ်ဆေးပါ။")
             else:
-                with st.spinner("Audio ကို သီးသန့်ခွဲထုတ်ပြီး စကားပြောများကို ဖတ်ယူနေပါသည်..."):
-                    # 1. Video မှ Audio ကို 16kHz WAV အဖြစ် သီးသန့် ခွဲထုတ်ခြင်း (Whisper ဖတ်ရလွယ်အောင်)
-                    extracted_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-                    os.system(f'ffmpeg -i "{st.session_state.video_path}" -vn -acodec pcm_s16le -ar 16000 -ac 1 -y "{extracted_audio}"')
+                with st.spinner("Video မှ Audio ကို ခွဲထုတ်ပြီး တရုတ်/အင်္ဂလိပ် စကားပြောများကို ဖတ်ယူနေပါသည်..."):
+                    # 1. Video မှ Audio ကို MP3 အဖြစ် သီးသန့် ခွဲထုတ်ခြင်း
+                    extracted_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
+                    os.system(f'ffmpeg -i "{st.session_state.video_path}" -vn -ar 16000 -ac 1 -ab 128k -f mp3 -y "{extracted_audio}"')
 
                     # 2. Language setting သတ်မှတ်ခြင်း
                     selected_lang = None
@@ -71,28 +71,27 @@ with tab1:
                     elif "en" in lang_choice:
                         selected_lang = "en"
 
-                    # 3. Transcribe ပြုလုပ်ခြင်း
-                    segments, info = whisper_model.transcribe(
-                        extracted_audio, 
-                        beam_size=5, 
-                        language=selected_lang,
-                        task="transcribe"
-                    )
+                    # 3. Standard OpenAI Whisper ထဲသို့ ထည့်သွင်းခြင်း
+                    options = {}
+                    if selected_lang:
+                        options["language"] = selected_lang
+
+                    result = whisper_model.transcribe(extracted_audio, **options)
                     
                     parsed_segments = []
                     full_text_list = []
 
-                    for seg in segments:
-                        txt = seg.text.strip()
+                    for seg in result.get("segments", []):
+                        txt = seg["text"].strip()
                         if txt:
                             parsed_segments.append({
-                                "start": round(seg.start, 2),
-                                "end": round(seg.end, 2),
+                                "start": round(seg["start"], 2),
+                                "end": round(seg["end"], 2),
                                 "text": txt
                             })
                             full_text_list.append(txt)
 
-                    # Clean up WAV file
+                    # Clean up Audio Temp File
                     if os.path.exists(extracted_audio):
                         os.remove(extracted_audio)
 
@@ -100,9 +99,9 @@ with tab1:
                     st.session_state.full_text = "\n".join(full_text_list)
 
                     if len(full_text_list) == 0:
-                        st.warning("⚠️ စာသား ထွက်မလာပါ။ Language နေရာတွင် တရုတ် (zh) သို့မဟုတ် အင်္ဂလိပ် (en) တိုက်ရိုက်ရွေးပေးပါ။")
+                        st.warning("⚠️ စာသား ထွက်မလာပါ။ Video ထဲတွင် အသံပါဝင်မှု ရှိမရှိ သို့မဟုတ် မူရင်း Video ကို စစ်ဆေးပေးပါ။")
                     else:
-                        st.success(f"✅ Transcribe ပြုလုပ်ပြီးပါပြီ! (Detected: {info.language}) TAB 2 သို့ သွား၍ ပြင်ဆင်ပါ။")
+                        st.success(f"✅ စာသား {len(full_text_list)} ကြောင်း Transcribe ပြုလုပ်ပြီးပါပြီ! TAB 2 သို့ သွား၍ ကြည့်နိုင်ပါပြီ။")
 
 # ================= TAB 2 : JSON Format & Rewrite =================
 with tab2:
