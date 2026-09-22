@@ -4,11 +4,32 @@ import asyncio
 import tempfile
 import os
 import shutil
-import speech_recognition as sr
+import json
+import wave
+import urllib.request
+import zipfile
+from vosk import Model, KaldiRecognizer
 
 # App configuration
 st.set_page_config(page_title="Video Auto Dubbing & Localizer Pro", page_icon="🎬", layout="wide")
 st.title("🎬 Video Auto Dubbing & Localizer Pro")
+
+# Offline Chinese Speech Model Downloader & Loader
+@st.cache_resource
+def load_vosk_model(lang):
+    model_dir = "vosk-model-small-cn-0.22"
+    zip_path = "vosk-model-small-cn-0.22.zip"
+    
+    if not os.path.exists(model_dir):
+        with st.spinner("အသံဖတ် မော်ဒယ် ဒေါင်းလုဒ်ဆွဲနေပါသည် (ခဏစောင့်ပေးပါ)..."):
+            url = "https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip"
+            urllib.request.urlretrieve(url, zip_path)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(".")
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+                
+    return Model(model_dir)
 
 # Helper for Safe Async Execution inside Streamlit
 def run_async(coro):
@@ -31,11 +52,6 @@ with tab1:
     st.markdown("### 📹 Video သို့မဟုတ် Audio File တင်ပါ")
     uploaded_file = st.file_uploader("Video/Audio Upload (MP4, MKV, MOV, MP3, WAV)", type=['mp4', 'mkv', 'mov', 'mp3', 'wav'])
 
-    lang_choice = st.selectbox(
-        "🌐 Video ထဲက စကားပြော ဘာသာစကား ရွေးပါ",
-        ["zh-CN (Chinese - တရုတ်)", "en-US (English - အင်္ဂလိပ်)"]
-    )
-
     if uploaded_file:
         suffix = os.path.splitext(uploaded_file.name)[1]
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -47,32 +63,45 @@ with tab1:
         else:
             st.audio(st.session_state.video_path)
 
-        if st.button("🎙️ စာသား စတင်ထုတ်မည် (API Key မလိုပါ)", type="primary", use_container_width=True):
+        if st.button("🎙️ စာသား စတင်ထုတ်မည်", type="primary", use_container_width=True):
             if not shutil.which("ffmpeg"):
                 st.error("❌ FFmpeg System Path တွင် မရှိပါ။ packages.txt ကို စစ်ဆေးပါ။")
             else:
-                with st.spinner("အသံဖိုင်မှ စာသားအဖြစ် အခမဲ့ ပြောင်းလဲပေးနေပါသည်..."):
+                with st.spinner("အသံဖိုင်မှ တရုတ်စာသားအဖြစ် ပြောင်းလဲပေးနေပါသည်..."):
                     wav_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-                    os.system(f'ffmpeg -i "{st.session_state.video_path}" -vn -ac 1 -ar 16000 -f wav -y "{wav_audio}"')
+                    # Convert to 16kHz Mono PCM WAV
+                    os.system(f'ffmpeg -i "{st.session_state.video_path}" -vn -ac 1 -ar 16000 -acodec pcm_s16le -y "{wav_audio}"')
 
                     try:
-                        recognizer = sr.Recognizer()
-                        with sr.AudioFile(wav_audio) as source:
-                            audio_data = recognizer.record(source)
+                        model = load_vosk_model("cn")
+                        wf = wave.open(wav_audio, "rb")
+                        rec = KaldiRecognizer(model, wf.getframerate())
+                        rec.SetWords(True)
 
-                        lang_code = "zh-CN" if "zh" in lang_choice else "en-US"
-                        text = recognizer.recognize_google(audio_data, language=lang_code)
+                        results = []
+                        while True:
+                            data = wf.readframes(4000)
+                            if len(data) == 0:
+                                break
+                            if rec.AcceptWaveform(data):
+                                part = json.loads(rec.Result())
+                                if 'text' in part and part['text'].strip():
+                                    results.append(part['text'].replace(" ", ""))
 
-                        # Single text/lines splitting
-                        lines = [line.strip() for line in text.split(' ') if line.strip()] if lang_code == "en-US" else [text]
+                        final_res = json.loads(rec.FinalResult())
+                        if 'text' in final_res and final_res['text'].strip():
+                            results.append(final_res['text'].replace(" ", ""))
 
-                        st.session_state.full_text = text
-                        st.session_state.transcript_data = lines
+                        extracted_text = "\n".join(results)
 
-                        st.success("✅ စာသား အောင်မြင်စွာ ထွက်လာပါပြီ! TAB 2 (Rewrite & Translate) တွင် စာသားများ တန်းပေါ်နေပါမည်။")
+                        st.session_state.full_text = extracted_text
+                        st.session_state.transcript_data = results
 
-                    except sr.UnknownValueError:
-                        st.warning("⚠️ စကားပြော အသံကို သဲသဲကွဲကွဲ မကြားရပါ။ Video အသံကို စစ်ဆေးပေးပါ။")
+                        if len(results) == 0:
+                            st.warning("⚠️ စာသား ထွက်မလာပါ။ မူရင်း Video အသံ ကြည်လင်မှု မရှိခြင်း သို့မဟုတ် အသံတိတ်နေခြင်း ဖြစ်နိုင်ပါတယ်။")
+                        else:
+                            st.success("✅ စာသား အောင်မြင်စွာ ထွက်လာပါပြီ! TAB 2 (Rewrite & Translate) တွင် စာသားများ တန်းပေါ်နေပါမည်။")
+
                     except Exception as e:
                         st.error(f"❌ Transcribe Error: {str(e)}")
 
@@ -151,4 +180,4 @@ with tab3:
         st.video(st.session_state.final_dub_video)
         with open(st.session_state.final_dub_video, 'rb') as f:
             st.download_button("📥 Dubbed Video Download (MP4)", f.read(), "dubbed_video.mp4", "video/mp4", use_container_width=True)
-    
+            
