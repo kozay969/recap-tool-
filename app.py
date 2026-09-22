@@ -4,12 +4,11 @@ import asyncio
 import tempfile
 import os
 import shutil
-from google import genai
-from google.genai import types
+import speech_recognition as sr
 
 # App configuration
 st.set_page_config(page_title="Video Auto Dubbing & Localizer Pro", page_icon="🎬", layout="wide")
-st.title("🎬 Video Auto Dubbing & Localizer Pro (Gemini Powered)")
+st.title("🎬 Video Auto Dubbing & Localizer Pro")
 
 # Helper for Safe Async Execution inside Streamlit
 def run_async(coro):
@@ -19,11 +18,6 @@ def run_async(coro):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
-
-# Sidebar for Gemini API Key
-st.sidebar.title("⚙️ Settings")
-gemini_api_key = st.sidebar.text_input("🔑 Gemini API Key ထည့်ပါ", type="password")
-st.sidebar.markdown("[Google AI Studio မှ API Key အခမဲ့ယူရန်](https://aistudio.google.com/)")
 
 tab1, tab2, tab3 = st.tabs(["📹 1. Upload & Transcribe", "📝 2. Rewrite & Translate", "🎙️ 3. Dubbing & Video Merge"])
 
@@ -39,7 +33,7 @@ with tab1:
 
     lang_choice = st.selectbox(
         "🌐 Video ထဲက စကားပြော ဘာသာစကား ရွေးပါ",
-        ["Chinese (တရုတ်)", "English (အင်္ဂလိပ်)", "Auto Detect"]
+        ["zh-CN (Chinese - တရုတ်)", "en-US (English - အင်္ဂလိပ်)"]
     )
 
     if uploaded_file:
@@ -53,64 +47,38 @@ with tab1:
         else:
             st.audio(st.session_state.video_path)
 
-        if st.button("🎙️ Gemini ဖြင့် စာသား စတင်ထုတ်မည်", type="primary", use_container_width=True):
-            if not gemini_api_key:
-                st.error("❌ ဘယ်ဘက် Sidebar တွင် Gemini API Key အရင်ထည့်သွင်းပေးပါ။")
-            elif not shutil.which("ffmpeg"):
+        if st.button("🎙️ စာသား စတင်ထုတ်မည် (API Key မလိုပါ)", type="primary", use_container_width=True):
+            if not shutil.which("ffmpeg"):
                 st.error("❌ FFmpeg System Path တွင် မရှိပါ။ packages.txt ကို စစ်ဆေးပါ။")
             else:
-                with st.spinner("Gemini API ဖြင့် Audio ဖတ်ရှုပြီး စာသားပြောင်းလဲနေပါသည်..."):
-                    extracted_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
-                    os.system(f'ffmpeg -i "{st.session_state.video_path}" -vn -ar 16000 -ac 1 -ab 128k -f mp3 -y "{extracted_audio}"')
+                with st.spinner("အသံဖိုင်မှ စာသားအဖြစ် အခမဲ့ ပြောင်းလဲပေးနေပါသည်..."):
+                    wav_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
+                    os.system(f'ffmpeg -i "{st.session_state.video_path}" -vn -ac 1 -ar 16000 -f wav -y "{wav_audio}"')
 
                     try:
-                        client = genai.Client(api_key=gemini_api_key)
+                        recognizer = sr.Recognizer()
+                        with sr.AudioFile(wav_audio) as source:
+                            audio_data = recognizer.record(source)
 
-                        # Audio File ကို Gemini API ဆီ တင်ခြင်း
-                        audio_file = client.files.upload(file=extracted_audio)
+                        lang_code = "zh-CN" if "zh" in lang_choice else "en-US"
+                        text = recognizer.recognize_google(audio_data, language=lang_code)
 
-                        prompt = f"""
-                        Listen to the provided audio file carefully.
-                        Transcribe the spoken audio text line by line.
-                        Language of spoken audio: {lang_choice}.
-                        Rules:
-                        1. Provide ONLY the transcribed spoken text.
-                        2. Print each spoken sentence on a new line.
-                        3. Do NOT include markdown code tags, formatting, sound descriptions, or headers.
-                        """
+                        # Single text/lines splitting
+                        lines = [line.strip() for line in text.split(' ') if line.strip()] if lang_code == "en-US" else [text]
 
-                        response = client.models.generate_content(
-                            model='gemini-2.5-flash',
-                            contents=[audio_file, prompt]
-                        )
+                        st.session_state.full_text = text
+                        st.session_state.transcript_data = lines
 
-                        transcribed_text = response.text.strip()
-                        lines = [line.strip() for line in transcribed_text.split('\n') if line.strip()]
+                        st.success("✅ စာသား အောင်မြင်စွာ ထွက်လာပါပြီ! TAB 2 (Rewrite & Translate) တွင် စာသားများ တန်းပေါ်နေပါမည်။")
 
-                        # Audio Timing Estimation based on total lines
-                        # (Gemini Audio Direct Transcription format mapping)
-                        parsed_segments = []
-                        for i, line in enumerate(lines):
-                            parsed_segments.append({
-                                "start": i * 3.0, # Average 3 seconds per line estimate
-                                "end": (i + 1) * 3.0,
-                                "text": line
-                            })
-
-                        st.session_state.transcript_data = parsed_segments
-                        st.session_state.full_text = "\n".join(lines)
-
-                        if len(lines) == 0:
-                            st.warning("⚠️ စာသား ထွက်မလာပါ။ မူရင်း Video တွင် အသံပါဝင်မှု စစ်ဆေးပါ။")
-                        else:
-                            st.success(f"✅ စာသား {len(lines)} ကြောင်း အောင်မြင်စွာ ထွက်လာပါပြီ! TAB 2 (Rewrite & Translate) တွင် စာသားများ တန်းပေါ်နေပါမည်။")
-
+                    except sr.UnknownValueError:
+                        st.warning("⚠️ စကားပြော အသံကို သဲသဲကွဲကွဲ မကြားရပါ။ Video အသံကို စစ်ဆေးပေးပါ။")
                     except Exception as e:
-                        st.error(f"❌ Gemini API Error: {str(e)}")
+                        st.error(f"❌ Transcribe Error: {str(e)}")
 
                     finally:
-                        if os.path.exists(extracted_audio):
-                            os.remove(extracted_audio)
+                        if os.path.exists(wav_audio):
+                            os.remove(wav_audio)
 
 # ================= TAB 2 : Plain Text Rewrite & Translate =================
 with tab2:
@@ -127,15 +95,13 @@ with tab2:
             "Translated / Rewritten Burmese Text", 
             value="", 
             height=380, 
-            placeholder="မူရင်း စာကြောင်း အရေအတွက် အတိုင်း မြန်မာလို တစ်ကြောင်းစီ ဘာသာပြန်ထည့်ပါ...",
+            placeholder="ဒီမှာ မြန်မာလို ဘာသာပြန်ထည့်ပါ...",
             key="translated_editor"
         )
 
-    st.info("💡 Original Text ထဲမှ စာကြောင်း အရေအတွက်နှင့် Translated Text ထဲမှ စာကြောင်း အရေအတွက် ညီနေရပါမည်။")
-
 # ================= TAB 3 : TTS & Video Merge =================
 with tab3:
-    st.markdown("### 🎙️ Edge TTS & Synchronized Video Merge")
+    st.markdown("### 🎙️ Edge TTS & Video Merge")
 
     async def generate_single_tts(text, voice, output_path):
         communicate = edge_tts.Communicate(text, voice)
@@ -153,7 +119,7 @@ with tab3:
         orig_vol = st.slider("🔇 မူရင်း Video အသံပမာဏ (%)", 0, 100, 5)
 
     if st.button("🚀 Video နှင့် အသံကို Dubbing ထုတ်မည်", type="primary", use_container_width=True):
-        translations = [line.strip() for line in st.session_state.translated_editor.split('\n') if line.strip()]
+        translations = st.session_state.translated_editor.strip()
 
         if not translations:
             st.warning("⚠️ ဖတ်ရန် စာသားမရှိပါ။ TAB 2 တွင် မြန်မာဘာသာပြန် ရေးထည့်ပါ။")
@@ -161,9 +127,8 @@ with tab3:
             st.warning("⚠️ Video Upload မတင်ရသေးပါ။ TAB 1 တွင် Upload တင်ပါ။")
         else:
             with st.spinner("အသံသစ် ဖန်တီးပြီး Video ထဲ ပေါင်းစပ်နေပါသည်..."):
-                combined_text = " ".join(translations)
                 dub_audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
-                run_async(generate_single_tts(combined_text, base_voice, dub_audio_path))
+                run_async(generate_single_tts(translations, base_voice, dub_audio_path))
 
                 output_video_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
                 orig_v_vol = orig_vol / 100.0
